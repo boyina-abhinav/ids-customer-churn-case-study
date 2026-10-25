@@ -1,0 +1,504 @@
+---
+title: "Customer Churn Analysis and Prediction using Logistic Regression"
+subtitle: "IDS Case Study - Review 1 | Data Analysis using R"
+author: "Boyina Abhinav (Roll No.: 160124771032)"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    df_print: paged
+---
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 4.5)
+```
+
+
+## 1. Introduction / Background
+
+- Customer churn refers to customers discontinuing their services with a company.
+- Customer retention is important because losing existing customers can affect business revenue and growth.
+- Customer data can be analyzed to identify patterns and factors associated with churn.
+- This case study focuses on analyzing telecom customer data and predicting whether a customer is likely to churn.
+
+## 2. Problem Statement
+
+- Telecommunication companies need to identify customers who are likely to leave their services.
+- The challenge is to understand which customer and service characteristics are associated with churn.
+- The case study will use customer information to analyze churn patterns and develop a prediction model.
+- Logistic Regression will be used because the target outcome, Churn, has two categories: Yes and No.
+
+## 3. Objectives
+
+1. Analyze customer demographic and service-related factors associated with churn.
+2. Clean, preprocess, and explore the customer churn dataset using R.
+3. Identify patterns and factors that may influence customer churn.
+4. Develop a Logistic Regression model to predict customer churn.
+
+## 4. Dataset
+
+| Item | Description |
+|---|---|
+| Dataset | Telco Customer Churn |
+| Records | 7,043 customer records |
+| Variables | 21 columns |
+| Target Variable | Churn – *Yes*: customer churned, *No*: customer stayed |
+| Important Variables | Tenure, Contract, Internet Service, Monthly Charges, Total Charges, Payment Method, Senior Citizen and other customer/service attributes |
+
+> **Before you run this:** place the dataset file `WA_Fn-UseC_-Telco-Customer-Churn.csv` in the same folder as this file (or change `data_file` in Section 6.1).
+
+## 5. Proposed Methodology
+
+**Dataset → Data Cleaning → Preprocessing → EDA & Visualization → Logistic Regression → Model Evaluation**
+
+R is used throughout the workflow for data preparation, analysis, visualization and model development.
+
+| Step | Section in this file |
+|---|---|
+| 1. Dataset | 6. Dataset |
+| 2. Data Cleaning | 7. Data Cleaning |
+| 3. Preprocessing | 8. Preprocessing |
+| 4. EDA & Visualization | 9. EDA & Visualization |
+| 5. Logistic Regression | 10. Logistic Regression |
+| 6. Model Evaluation | 11. Model Evaluation |
+
+## Setup
+
+Install any missing packages and load the libraries used in this file.
+
+```{r}
+required_pkgs <- c("tidyverse", "caret", "pROC", "scales", "car")
+missing_pkgs  <- required_pkgs[!(required_pkgs %in% rownames(installed.packages()))]
+if (length(missing_pkgs) > 0) {
+  install.packages(missing_pkgs, repos = "https://cloud.r-project.org")
+}
+
+suppressPackageStartupMessages({
+  library(tidyverse)   # dplyr, ggplot2, readr, tidyr ...
+  library(caret)       # train/test split, confusion matrix
+  library(pROC)        # ROC curve and AUC
+  library(scales)      # percent labels on plots
+})
+
+theme_set(theme_minimal(base_size = 13))
+```
+
+## 6. Dataset
+
+### 6.1 Load the data
+
+```{r}
+data_file <- "WA_Fn-UseC_-Telco-Customer-Churn.csv"
+
+if (!file.exists(data_file)) {
+  stop("Dataset not found. Put '", data_file, "' in the working directory: ", getwd())
+}
+
+churn_raw <- read.csv(data_file, stringsAsFactors = FALSE)
+
+cat("Records  :", nrow(churn_raw), "\n")
+cat("Variables:", ncol(churn_raw), "\n")
+```
+
+### 6.2 First look at the data
+
+```{r}
+head(churn_raw)
+```
+
+```{r}
+glimpse(churn_raw)
+```
+
+```{r}
+summary(churn_raw)
+```
+
+### 6.3 Target variable
+
+The target variable, **Churn**, has two categories (*Yes* / *No*), which makes this a binary classification problem.
+
+```{r}
+table(churn_raw$Churn)
+round(prop.table(table(churn_raw$Churn)) * 100, 2)
+```
+
+## 7. Data Cleaning
+
+### 7.1 Missing values, blanks and duplicates
+
+```{r}
+# Explicit NA values per column
+colSums(is.na(churn_raw))
+```
+
+```{r}
+# Blank strings (they are not NA, so they are easy to miss)
+blank_counts <- sapply(churn_raw, function(x) sum(trimws(as.character(x)) == "", na.rm = TRUE))
+blank_counts[blank_counts > 0]
+```
+
+```{r}
+# Duplicate customers
+cat("Duplicate customerID values:", sum(duplicated(churn_raw$customerID)), "\n")
+```
+
+### 7.2 Convert `TotalCharges` to numeric
+
+Initial dataset inspection indicates that **TotalCharges requires numerical conversion** during preprocessing. It is read as text because some entries are blank, so it is converted with `as.numeric()` after trimming spaces.
+
+```{r}
+churn <- churn_raw
+churn$TotalCharges <- as.numeric(trimws(churn$TotalCharges))
+
+cat("TotalCharges class now:", class(churn$TotalCharges), "\n")
+cat("Missing TotalCharges  :", sum(is.na(churn$TotalCharges)), "\n")
+```
+
+```{r}
+# Inspect the rows where TotalCharges could not be converted
+churn %>%
+  filter(is.na(TotalCharges)) %>%
+  select(customerID, tenure, MonthlyCharges, TotalCharges, Churn)
+```
+
+In this dataset, 11 rows have a blank `TotalCharges` value. All of them are customers with `tenure = 0` (not yet billed) and `Churn = No`. They make up about 0.16% of the data, so they are removed. Expected size after cleaning: 7,032 rows.
+
+```{r}
+rows_before <- nrow(churn)
+churn <- churn %>% filter(!is.na(TotalCharges))
+cat("Rows before:", rows_before, "| Rows after:", nrow(churn),
+    "| Removed:", rows_before - nrow(churn), "\n")
+```
+
+## 8. Preprocessing
+
+### 8.1 Drop the identifier and tidy categorical levels
+
+- `customerID` is only an identifier, so it is dropped.
+- `SeniorCitizen` is stored as 0/1, so it is converted to *No* / *Yes* like the other categorical variables.
+- Levels such as *"No phone service"* and *"No internet service"* carry the same information as *"No"* (it is already captured by `PhoneService` / `InternetService`), so they are merged into *"No"*.
+
+```{r}
+internet_dependent <- c("OnlineSecurity", "OnlineBackup", "DeviceProtection",
+                        "TechSupport", "StreamingTV", "StreamingMovies")
+
+churn <- churn %>%
+  select(-customerID) %>%
+  mutate(
+    SeniorCitizen = ifelse(SeniorCitizen == 1, "Yes", "No"),
+    MultipleLines = ifelse(MultipleLines == "No phone service", "No", MultipleLines),
+    across(all_of(internet_dependent), ~ ifelse(.x == "No internet service", "No", .x))
+  )
+```
+
+### 8.2 Convert categorical variables to factors
+
+```{r}
+churn <- churn %>% mutate(across(where(is.character), as.factor))
+
+# 'No' is the reference level, so the model estimates the probability of Churn = 'Yes'
+churn$Churn <- relevel(churn$Churn, ref = "No")
+
+str(churn)
+```
+
+### 8.3 Train / test split
+
+The data is split 70% / 30% with stratified sampling, so the proportion of churned customers is similar in both parts. A seed is set so the results are reproducible.
+
+```{r}
+set.seed(123)
+train_idx <- createDataPartition(churn$Churn, p = 0.70, list = FALSE)
+train <- churn[train_idx, ]
+test  <- churn[-train_idx, ]
+
+cat("Training rows:", nrow(train), "| Test rows:", nrow(test), "\n\n")
+cat("Churn share in training set:\n"); print(round(prop.table(table(train$Churn)), 3))
+cat("Churn share in test set:\n");     print(round(prop.table(table(test$Churn)), 3))
+```
+
+## 9. EDA & Visualization
+
+Exploratory analysis is done on the cleaned full dataset to identify patterns and factors that may influence customer churn.
+
+### 9.1 Overall churn distribution
+
+```{r}
+churn %>%
+  count(Churn) %>%
+  mutate(pct = n / sum(n)) %>%
+  ggplot(aes(x = Churn, y = n, fill = Churn)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = paste0(n, " (", percent(pct, accuracy = 0.1), ")")), vjust = -0.4) +
+  scale_fill_manual(values = c("No" = "#0F8B8D", "Yes" = "#E4572E")) +
+  labs(title = "Customer churn distribution", x = "Churn", y = "Customers") +
+  theme(legend.position = "none") +
+  expand_limits(y = max(table(churn$Churn)) * 1.12)
+```
+
+### 9.2 Churn by customer and service characteristics
+
+Each bar shows the share of customers who churned (*Yes*) and stayed (*No*) within each category.
+
+```{r}
+plot_churn_by <- function(var) {
+  ggplot(churn, aes(x = .data[[var]], fill = Churn)) +
+    geom_bar(position = "fill", width = 0.7) +
+    scale_y_continuous(labels = percent) +
+    scale_fill_manual(values = c("No" = "#0F8B8D", "Yes" = "#E4572E")) +
+    labs(title = paste("Churn by", var), x = var, y = "Share of customers") +
+    theme(axis.text.x = element_text(angle = 20, hjust = 1))
+}
+
+for (v in c("Contract", "InternetService", "PaymentMethod", "SeniorCitizen")) {
+  print(plot_churn_by(v))
+}
+```
+
+```{r}
+# Other customer / service attributes
+for (v in c("gender", "Partner", "Dependents", "PhoneService", "MultipleLines",
+            "OnlineSecurity", "TechSupport", "PaperlessBilling")) {
+  print(plot_churn_by(v))
+}
+```
+
+### 9.3 Churn rate by category (table)
+
+```{r}
+churn_rate_by <- function(var) {
+  churn %>%
+    group_by(.data[[var]]) %>%
+    summarise(customers = n(),
+              churned   = sum(Churn == "Yes"),
+              churn_rate = round(100 * mean(Churn == "Yes"), 1),
+              .groups = "drop") %>%
+    arrange(desc(churn_rate))
+}
+
+churn_rate_by("Contract")
+churn_rate_by("InternetService")
+churn_rate_by("PaymentMethod")
+churn_rate_by("SeniorCitizen")
+```
+
+### 9.4 Numeric variables: `tenure`, `MonthlyCharges`, `TotalCharges`
+
+```{r}
+churn %>%
+  group_by(Churn) %>%
+  summarise(across(c(tenure, MonthlyCharges, TotalCharges),
+                   list(mean = ~ round(mean(.x), 2), median = ~ round(median(.x), 2)),
+                   .names = "{.col}_{.fn}"),
+            .groups = "drop")
+```
+
+```{r}
+ggplot(churn, aes(x = tenure, fill = Churn)) +
+  geom_histogram(bins = 30, alpha = 0.85, position = "identity") +
+  facet_wrap(~ Churn, ncol = 1, scales = "free_y") +
+  scale_fill_manual(values = c("No" = "#0F8B8D", "Yes" = "#E4572E")) +
+  labs(title = "Tenure distribution by churn", x = "Tenure (months)", y = "Customers") +
+  theme(legend.position = "none")
+```
+
+```{r}
+churn %>%
+  select(Churn, tenure, MonthlyCharges, TotalCharges) %>%
+  pivot_longer(-Churn, names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = Churn, y = value, fill = Churn)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  facet_wrap(~ variable, scales = "free_y") +
+  scale_fill_manual(values = c("No" = "#0F8B8D", "Yes" = "#E4572E")) +
+  labs(title = "Numeric variables by churn", x = NULL, y = NULL) +
+  theme(legend.position = "none")
+```
+
+### 9.5 Correlation between numeric variables
+
+```{r}
+round(cor(churn[, c("tenure", "MonthlyCharges", "TotalCharges")]), 2)
+```
+
+`TotalCharges` is closely related to `tenure` and `MonthlyCharges` (it is roughly their product), so these variables can be correlated with each other. This is checked again with variance inflation factors in Section 10.
+
+## 10. Logistic Regression
+
+Logistic Regression is used because the target, **Churn**, is binary. The model estimates the log-odds of a customer churning from all the other variables.
+
+### 10.1 Fit the model on the training set
+
+```{r}
+log_model <- glm(Churn ~ ., data = train, family = binomial)
+summary(log_model)
+```
+
+### 10.2 Significant predictors
+
+Predictors with p-value < 0.05 are listed below. A positive coefficient raises the odds of churn, and a negative coefficient lowers them.
+
+```{r}
+coef_tbl <- as.data.frame(summary(log_model)$coefficients)
+colnames(coef_tbl) <- c("Estimate", "StdError", "z_value", "p_value")
+coef_tbl$Term <- rownames(coef_tbl)
+rownames(coef_tbl) <- NULL
+
+sig_tbl <- coef_tbl %>%
+  filter(Term != "(Intercept)", p_value < 0.05) %>%
+  arrange(p_value) %>%
+  mutate(across(c(Estimate, StdError, z_value), ~ round(.x, 3)),
+         p_value = signif(p_value, 3)) %>%
+  select(Term, Estimate, StdError, z_value, p_value)
+
+sig_tbl
+```
+
+### 10.3 Odds ratios
+
+Odds ratio = exp(coefficient). A value above 1 means the odds of churn increase for that category (or per unit increase for numeric variables), and a value below 1 means they decrease.
+
+```{r}
+ci <- exp(confint.default(log_model))   # Wald confidence intervals
+
+or_tbl <- data.frame(
+  Term      = names(coef(log_model)),
+  OddsRatio = exp(coef(log_model)),
+  Lower95   = ci[, 1],
+  Upper95   = ci[, 2],
+  row.names = NULL
+) %>%
+  filter(Term != "(Intercept)") %>%
+  mutate(across(c(OddsRatio, Lower95, Upper95), ~ round(.x, 3))) %>%
+  arrange(desc(OddsRatio))
+
+cat("Largest increase in churn odds:\n"); print(head(or_tbl, 8))
+cat("\nLargest decrease in churn odds:\n"); print(tail(or_tbl, 8))
+```
+
+### 10.4 Multicollinearity check (VIF)
+
+```{r}
+# Generalised VIF (GVIF^(1/(2*Df)) above ~2 suggests notable collinearity)
+vif_vals <- car::vif(log_model)
+round(vif_vals, 2)
+```
+
+Note: `tenure`, `MonthlyCharges` and `TotalCharges`, along with the internet service variables, often show high VIF values because they are related to each other. The model is kept as it is, since the goal here is prediction and understanding broad patterns, but individual coefficients of correlated variables should be interpreted with care.
+
+## 11. Model Evaluation
+
+The model is evaluated on the **test set** (data it has not seen) using appropriate classification metrics.
+
+### 11.1 Predicted probabilities and confusion matrix (threshold = 0.5)
+
+```{r}
+test_prob <- predict(log_model, newdata = test, type = "response")
+test_pred <- factor(ifelse(test_prob >= 0.5, "Yes", "No"), levels = c("No", "Yes"))
+
+cm <- confusionMatrix(test_pred, test$Churn, positive = "Yes")
+cm
+```
+
+```{r}
+# Confusion matrix as a heat-map
+as.data.frame(cm$table) %>%
+  ggplot(aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = Freq), size = 6) +
+  scale_fill_gradient(low = "#EAF4F4", high = "#0F8B8D") +
+  labs(title = "Confusion matrix (test set, threshold = 0.5)",
+       x = "Actual churn", y = "Predicted churn") +
+  theme(legend.position = "none")
+```
+
+### 11.2 Classification metrics
+
+```{r}
+metrics_05 <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall (Sensitivity)", "Specificity", "F1 score"),
+  Value  = round(c(cm$overall["Accuracy"],
+                   cm$byClass["Precision"],
+                   cm$byClass["Recall"],
+                   cm$byClass["Specificity"],
+                   cm$byClass["F1"]), 3),
+  row.names = NULL
+)
+metrics_05
+```
+
+- **Accuracy**: share of all customers classified correctly.
+- **Precision**: of the customers predicted to churn, the share that really churned.
+- **Recall**: of the customers who really churned, the share the model caught.
+- **F1 score**: balance between precision and recall.
+
+Because only a minority of customers churn, accuracy alone can look good even if many churners are missed, so recall and F1 are important here.
+
+### 11.3 ROC curve and AUC
+
+```{r}
+roc_obj <- roc(response = test$Churn, predictor = test_prob,
+               levels = c("No", "Yes"), direction = "<", quiet = TRUE)
+
+auc_value <- as.numeric(auc(roc_obj))
+cat("AUC:", round(auc_value, 3), "\n")
+
+plot(roc_obj, col = "#0F8B8D", lwd = 3, legacy.axes = TRUE,
+     main = paste0("ROC curve (AUC = ", round(auc_value, 3), ")"),
+     xlab = "1 - Specificity (False positive rate)",
+     ylab = "Sensitivity (True positive rate)")
+abline(a = 0, b = 1, lty = 2, col = "grey50")
+```
+
+### 11.4 Choosing a better threshold
+
+The default cut-off of 0.5 is not always best for an imbalanced target. The threshold that maximises *sensitivity + specificity* (Youden's index) is found on the ROC curve and the model is re-evaluated with it.
+
+```{r}
+best <- coords(roc_obj, x = "best", best.method = "youden",
+               ret = c("threshold", "sensitivity", "specificity"), transpose = FALSE)
+best_threshold <- best$threshold[1]
+cat("Best threshold (Youden):", round(best_threshold, 3), "\n")
+
+pred_best <- factor(ifelse(test_prob >= best_threshold, "Yes", "No"), levels = c("No", "Yes"))
+cm_best <- confusionMatrix(pred_best, test$Churn, positive = "Yes")
+cm_best
+```
+
+```{r}
+comparison <- data.frame(
+  Metric = c("Accuracy", "Precision", "Recall (Sensitivity)", "Specificity", "F1 score"),
+  `Threshold 0.5` = round(c(cm$overall["Accuracy"], cm$byClass["Precision"], cm$byClass["Recall"],
+                            cm$byClass["Specificity"], cm$byClass["F1"]), 3),
+  `Best threshold` = round(c(cm_best$overall["Accuracy"], cm_best$byClass["Precision"], cm_best$byClass["Recall"],
+                             cm_best$byClass["Specificity"], cm_best$byClass["F1"]), 3),
+  check.names = FALSE, row.names = NULL
+)
+comparison
+```
+
+## 12. Results Summary
+
+```{r}
+cat("====== CASE STUDY RESULTS ======\n")
+cat("Customers analysed (after cleaning):", nrow(churn), "\n")
+cat("Overall churn rate                 :", round(100 * mean(churn$Churn == "Yes"), 1), "%\n")
+cat("Training / test rows               :", nrow(train), "/", nrow(test), "\n\n")
+cat("Test accuracy  (threshold 0.5)     :", round(cm$overall["Accuracy"], 3), "\n")
+cat("Test recall    (threshold 0.5)     :", round(cm$byClass["Recall"], 3), "\n")
+cat("Test precision (threshold 0.5)     :", round(cm$byClass["Precision"], 3), "\n")
+cat("AUC                                :", round(auc_value, 3), "\n\n")
+cat("Significant predictors (p < 0.05)  :", nrow(sig_tbl), "\n")
+print(sig_tbl$Term)
+```
+
+## 13. Expected Outcome / Conclusion
+
+- Identify customer and service characteristics associated with churn.
+- Develop a Logistic Regression model for customer churn prediction.
+- Evaluate the model using appropriate classification metrics.
+- Use the results to understand customer churn patterns and support potential retention decisions.
+
+The final documentation will present the analysis, visualizations, model results and conclusions.
+
+**How to read the results:** use the significant predictors and odds ratios (Section 10) to see which customer and service characteristics are linked to higher or lower churn, the churn-rate tables and plots (Section 9) to see those patterns in the raw data, and the accuracy, precision, recall, F1 and AUC values (Section 11) to judge how well the model predicts churn. Customers with a high predicted churn probability are the natural targets for retention offers.
