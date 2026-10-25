@@ -1,6 +1,6 @@
 ---
 title: "Customer Churn Analysis and Prediction using Logistic Regression"
-subtitle: "IDS Case Study - Review 1 | Data Analysis using R"
+subtitle: "IDS Case Study - Review 2 | Data Analysis using R"
 author: "Boyina Abhinav (Roll No.: 160124771032)"
 output:
   html_document:
@@ -145,7 +145,7 @@ cat("Duplicate customerID values:", sum(duplicated(churn_raw$customerID)), "\n")
 
 ### 7.2 Convert `TotalCharges` to numeric
 
-Initial dataset inspection indicates that **TotalCharges requires numerical conversion** during preprocessing. It is read as text because some entries are blank, so it is converted with `as.numeric()` after trimming spaces.
+Initial dataset inspection shows that **TotalCharges has 11 blank entries**. In this copy of the dataset R already reads the column as numeric, so the blanks appear as `NA`. (In some copies of the file the column is read as text instead.) To be safe in both cases, the column is converted with `as.numeric()` after trimming spaces.
 
 ```{r}
 churn <- churn_raw
@@ -384,7 +384,7 @@ vif_vals <- car::vif(log_model)
 round(vif_vals, 2)
 ```
 
-Note: `tenure`, `MonthlyCharges` and `TotalCharges`, along with the internet service variables, often show high VIF values because they are related to each other. The model is kept as it is, since the goal here is prediction and understanding broad patterns, but individual coefficients of correlated variables should be interpreted with care.
+Note: `MonthlyCharges` shows by far the highest value, while `PhoneService`, `StreamingTV`, `StreamingMovies`, `TotalCharges`, `InternetService` and `tenure` also show high values, because these variables are closely related to each other (for example, monthly charges depend on which services a customer has, and `TotalCharges` is roughly `tenure` x `MonthlyCharges`). The model is kept as it is, since the goal here is prediction and understanding broad patterns, but individual coefficients of correlated variables (such as the very wide confidence interval for `InternetService` Fiber optic) should be interpreted with care.
 
 ## 11. Model Evaluation
 
